@@ -10,6 +10,7 @@ option(BUILD_SHARED "Build shared library" ON)
 option(BUILD_STATIC "Build static library" ON)
 option(BUILD_BENCHMARK "Build benchmark" ON)
 option(BUILD_TESTS "Build tests" ON)
+option(BUILD_FUZZERS "Build fuzz targets (tests/fuzz)" OFF)
 OPTION(ENABLE_CODECOVERAGE "Enable code coverage testing support" OFF)
 OPTION(ENABLE_PROFILE "Enable code profiling support" OFF)
 option(BUILD_EXAMPLES "Build examples" ON)
@@ -87,7 +88,7 @@ add_subdirectory("src")
 # --- Unit Tests ---
 ENABLE_TESTING()
 
-if(BUILD_TESTS OR BUILD_BENCHMARK)
+if(BUILD_TESTS OR BUILD_BENCHMARK OR BUILD_FUZZERS)
   add_subdirectory("tests")
 endif()
 

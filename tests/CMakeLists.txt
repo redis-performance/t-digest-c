@@ -21,5 +21,9 @@ if (BUILD_TESTS)
     add_test(td_test td_test)
 endif()
 
+if (BUILD_FUZZERS)
+    add_subdirectory(fuzz)
+endif()
+
 
 

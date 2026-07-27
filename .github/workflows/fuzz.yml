@@ -1,0 +1,104 @@
+name: Fuzz
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    # Weekly soak, so regressions surface without waiting for a PR.
+    - cron: '0 3 * * 1'
+
+jobs:
+  # Fast gate on every PR: build the targets and replay the committed corpora.
+  # No mutation, so runtime is bounded and deterministic.
+  replay:
+    name: replay corpora (ASan+UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang cmake
+      - name: Build fuzz targets
+        run: |
+          cmake -S . -B build/fuzz \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_FUZZERS=ON -DBUILD_TESTS=OFF -DBUILD_BENCHMARK=OFF \
+            -DBUILD_EXAMPLES=OFF -DBUILD_SHARED=OFF \
+            -DFUZZ_ENGINE=libfuzzer -DFUZZ_SANITIZERS="address;undefined"
+          cmake --build build/fuzz -j"$(nproc)"
+      - name: Replay seed corpus and regressions
+        env:
+          ASAN_OPTIONS: allocator_may_return_null=1
+          UBSAN_OPTIONS: print_stacktrace=1
+          DEBUGINFOD_URLS: ''
+        run: |
+          for t in fuzz_td_api fuzz_td_quantile fuzz_td_merge fuzz_td_init; do
+            echo "::group::$t"
+            ./build/fuzz/tests/fuzz/$t tests/fuzz/corpus/* tests/fuzz/regressions/*
+            echo "::endgroup::"
+          done
+
+  # Short mutation run per target on PRs; the weekly schedule gets the long one.
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [fuzz_td_api, fuzz_td_quantile, fuzz_td_merge, fuzz_td_init]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang cmake
+      - name: Build
+        run: |
+          cmake -S . -B build/fuzz \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_FUZZERS=ON -DBUILD_TESTS=OFF -DBUILD_BENCHMARK=OFF \
+            -DBUILD_EXAMPLES=OFF -DBUILD_SHARED=OFF \
+            -DFUZZ_ENGINE=libfuzzer -DFUZZ_SANITIZERS="address;undefined"
+          cmake --build build/fuzz -j"$(nproc)"
+      - name: Fuzz
+        env:
+          ASAN_OPTIONS: allocator_may_return_null=1
+          UBSAN_OPTIONS: print_stacktrace=1
+          DEBUGINFOD_URLS: ''
+          DURATION: ${{ github.event_name == 'schedule' && '1800' || '300' }}
+        run: |
+          mkdir -p build/corpus artifacts
+          ./build/fuzz/tests/fuzz/${{ matrix.target }} \
+            build/corpus tests/fuzz/corpus tests/fuzz/regressions \
+            -max_total_time="$DURATION" \
+            -rss_limit_mb=4096 -malloc_limit_mb=2048 -timeout=25 \
+            -artifact_prefix=artifacts/ \
+            -print_final_stats=1
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crashes-${{ matrix.target }}
+          path: artifacts/
+          if-no-files-found: ignore
+
+  # The targets must also build and replay without clang, so contributors on gcc
+  # can reproduce a regression from the committed corpus.
+  standalone-gcc:
+    name: standalone replay (gcc, no sanitizers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          cmake -S . -B build/fuzz-gcc \
+            -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_FUZZERS=ON -DBUILD_TESTS=OFF -DBUILD_BENCHMARK=OFF \
+            -DBUILD_EXAMPLES=OFF -DBUILD_SHARED=OFF \
+            -DFUZZ_ENGINE=standalone -DFUZZ_SANITIZERS=""
+          cmake --build build/fuzz-gcc -j"$(nproc)"
+      - name: Replay
+        run: |
+          for t in fuzz_td_api fuzz_td_quantile fuzz_td_merge fuzz_td_init; do
+            ./build/fuzz-gcc/tests/fuzz/$t tests/fuzz/corpus/* tests/fuzz/regressions/*
+          done
